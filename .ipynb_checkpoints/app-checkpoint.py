@@ -71,9 +71,9 @@ def load_test_data():
         y_test = joblib.load("y_test.pkl")
         scaler = joblib.load('scaler.pkl')
         scaled_columns = joblib.load('scaled_columns.pkl')
-        return X_test, y_test
+        return X_test, y_test, scaler, scaled_columns
     except Exception:
-        return None, None
+        return None, None, None, None
 
 model_files = {
     "KNN (K-Nearest Neighbors)": "knn_model.pkl",
@@ -81,12 +81,13 @@ model_files = {
     "ANN (Artificial Neural Network)": "ann_model.pkl"
 }
 
-X_test, y_test = load_test_data()
+# Unpack global variables
+X_test, y_test, scaler, scaled_columns = load_test_data()
 
 # ---------------------------------------------------------
 # 3. Automatic Feature Engineering & Converter
 # ---------------------------------------------------------
-def transform_user_input(user_dict, expected_features):
+def transform_user_input(user_dict, expected_features, scaler=None, scaled_columns=None):
     """
     Transforms raw user questionnaire inputs into the preprocessed 
     engineered feature format expected by the pre-trained model.
@@ -115,9 +116,11 @@ def transform_user_input(user_dict, expected_features):
         (df['exang'] == True).astype(int)
     )
 
-    cols_to_scale = [c for c in scaled_columns if c in df_transformed.columns]
-    df_transformed[cols_to_scale] = scaler.transform(df_transformed[cols_to_scale])
-
+    # Safely perform scaling if scaler and scaled_columns are loaded
+    if scaler is not None and scaled_columns is not None:
+        cols_to_scale = [c for c in scaled_columns if c in df_transformed.columns]
+        if cols_to_scale:
+            df_transformed[cols_to_scale] = scaler.transform(df_transformed[cols_to_scale])
     
     # Missing value indicators
     df_transformed['data_was_missing'] = 0
@@ -256,7 +259,12 @@ with tab1:
             'thal': thal
         }
         
-        processed_input = transform_user_input(user_dict, expected_features)
+        processed_input = transform_user_input(
+            user_dict, 
+            expected_features, 
+            scaler=scaler, 
+            scaled_columns=scaled_columns
+        )
         
         st.markdown("---")
         st.subheader("🔍 Prediction Results")

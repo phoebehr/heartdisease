@@ -117,7 +117,6 @@ def transform_user_input(user_dict, expected_features):
 
     cols_to_scale = [c for c in scaled_columns if c in df_transformed.columns]
     df_transformed[cols_to_scale] = scaler.transform(df_transformed[cols_to_scale])
-
     
     # Missing value indicators
     df_transformed['data_was_missing'] = 0

@@ -69,6 +69,8 @@ def load_test_data():
     try:
         X_test = joblib.load("X_test.pkl")
         y_test = joblib.load("y_test.pkl")
+        scaler = joblib.load('scaler.pkl')
+        scaled_columns = joblib.load('scaled_columns.pkl')
         return X_test, y_test
     except Exception:
         return None, None
@@ -112,6 +114,10 @@ def transform_user_input(user_dict, expected_features):
         (df['trestbps'] > 130).astype(int) + 
         (df['exang'] == True).astype(int)
     )
+
+    cols_to_scale = [c for c in scaled_columns if c in df_transformed.columns]
+    df_transformed[cols_to_scale] = scaler.transform(df_transformed[cols_to_scale])
+
     
     # Missing value indicators
     df_transformed['data_was_missing'] = 0

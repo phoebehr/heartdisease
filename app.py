@@ -5,12 +5,15 @@ import numpy as np
 import joblib
 import plotly.express as px
 import plotly.graph_objects as go
+from model_wrappers import ThresholdedClassifier
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
     precision_score,
     recall_score,
-    f1_score
+    f1_score,
+    roc_auc_score,
+    average_precision_score
 )
 
 # ---------------------------------------------------------
@@ -484,7 +487,9 @@ with tab2:
 # ---------------------------------------------------------
 with tab3:
     st.subheader("📈 Model Comparison")
-    st.write("Side-by-side comparison of Accuracy, Precision, Recall, and F1-score for all three models, evaluated on the same held-out test set.")
+    st.write("Side-by-side comparison of all three models, evaluated on the same held-out test set. "
+             "Metrics below focus specifically on the **disease class (1)** — the positive class this "
+             "tool is meant to detect — rather than an average across both classes.")
 
     st.markdown("---")
 
@@ -503,13 +508,32 @@ with tab3:
                 elif len(y_pred.shape) > 1:
                     y_pred = (y_pred > 0.5).astype(int).flatten()
 
-                comparison_rows.append({
+                # predicted probabilities, needed for ROC-AUC / PR-AUC
+                y_proba = None
+                if hasattr(comp_model, "predict_proba"):
+                    try:
+                        y_proba = comp_model.predict_proba(X_test_raw)[:, 1]
+                    except Exception:
+                        y_proba = None
+
+                tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+                specificity = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+                fn_rate = fn / (fn + tp) if (fn + tp) > 0 else np.nan
+
+                row = {
                     "Model": model_label,
                     "Accuracy": accuracy_score(y_test, y_pred),
-                    "Precision": precision_score(y_test, y_pred, average="weighted", zero_division=0),
-                    "Recall": recall_score(y_test, y_pred, average="weighted", zero_division=0),
-                    "F1-Score": f1_score(y_test, y_pred, average="weighted", zero_division=0),
-                })
+                    "Precision (Disease)": precision_score(y_test, y_pred, pos_label=1, zero_division=0),
+                    "Recall / Sensitivity (Disease)": recall_score(y_test, y_pred, pos_label=1, zero_division=0),
+                    "Specificity (No Disease)": specificity,
+                    "Macro F1": f1_score(y_test, y_pred, average="macro", zero_division=0),
+                    "Weighted F1": f1_score(y_test, y_pred, average="weighted", zero_division=0),
+                    "ROC-AUC": roc_auc_score(y_test, y_proba) if y_proba is not None else np.nan,
+                    "PR-AUC": average_precision_score(y_test, y_proba) if y_proba is not None else np.nan,
+                    "False Negatives": int(fn),
+                    "False Negative Rate": fn_rate,
+                }
+                comparison_rows.append(row)
             except Exception as e:
                 load_errors.append(f"⚠️ Could not evaluate `{model_label}`: {e}")
 
@@ -519,17 +543,31 @@ with tab3:
         if comparison_rows:
             comp_df = pd.DataFrame(comparison_rows).set_index("Model")
 
+            percent_cols = [
+                "Accuracy", "Precision (Disease)", "Recall / Sensitivity (Disease)",
+                "Specificity (No Disease)", "Macro F1", "Weighted F1",
+                "ROC-AUC", "PR-AUC", "False Negative Rate"
+            ]
+
             # 1. Summary table — best value per metric highlighted
+            # (False Negatives is the one column where LOWER is better, everything else HIGHER is better)
             st.markdown("#### 📋 Metric Summary")
-            styled_df = comp_df.style.format("{:.2%}").highlight_max(
-                axis=0, color="#c6f6d5"
+            format_dict = {col: "{:.2%}" for col in percent_cols}
+            format_dict["False Negatives"] = "{:.0f}"
+
+            styled_df = (
+                comp_df.style
+                .format(format_dict)
+                .highlight_max(subset=percent_cols, axis=0, color="#c6f6d5")
+                .highlight_min(subset=["False Negatives", "False Negative Rate"], axis=0, color="#c6f6d5")
             )
             st.dataframe(styled_df, use_container_width=True)
 
-            # 2. Best model per metric, as quick-glance cards
-            st.markdown("#### 🏆 Best Model per Metric")
+            # 2. Best model per key metric, as quick-glance cards
+            st.markdown("#### 🏆 Best Model per Key Metric")
             metric_cols = st.columns(4)
-            for col, metric in zip(metric_cols, ["Accuracy", "Precision", "Recall", "F1-Score"]):
+            key_metrics = ["Accuracy", "Recall / Sensitivity (Disease)", "Specificity (No Disease)", "ROC-AUC"]
+            for col, metric in zip(metric_cols, key_metrics):
                 best_model_name = comp_df[metric].idxmax()
                 best_value = comp_df[metric].max()
                 with col:
@@ -537,15 +575,17 @@ with tab3:
 
             st.markdown("---")
 
-            # 3. Grouped bar chart across all metrics
+            # 3. Grouped bar chart across the core metrics
             st.markdown("#### 📊 Visual Comparison")
+            chart_metrics = ["Accuracy", "Precision (Disease)", "Recall / Sensitivity (Disease)",
+                              "Specificity (No Disease)", "Macro F1", "ROC-AUC"]
             fig = go.Figure()
             for model_label in comp_df.index:
                 fig.add_trace(go.Bar(
                     name=model_label,
-                    x=comp_df.columns,
-                    y=comp_df.loc[model_label],
-                    text=[f"{v:.1%}" for v in comp_df.loc[model_label]],
+                    x=chart_metrics,
+                    y=comp_df.loc[model_label, chart_metrics],
+                    text=[f"{v:.1%}" for v in comp_df.loc[model_label, chart_metrics]],
                     textposition="auto"
                 ))
             fig.update_layout(
@@ -557,14 +597,44 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
 
+            # 4. False Negatives — explicit clinical callout
+            st.markdown("---")
+            st.markdown("#### 🚨 False Negatives — Why This Matters Most")
+            st.warning(
+                "In this context, a **false negative** means the model told a patient who actually has "
+                "heart disease that they *don't*. This is the most clinically dangerous type of error a "
+                "screening tool can make: it can lead to a missed diagnosis, delayed treatment, and a "
+                "false sense of reassurance — whereas a **false positive** (incorrectly flagging a healthy "
+                "patient) typically just leads to extra testing that rules the disease out. For this reason, "
+                "**Recall / Sensitivity** and the **False Negative** count below are arguably more important "
+                "than overall Accuracy when judging which model is safest to deploy."
+            )
+            fn_cols = st.columns(3)
+            for col, model_label in zip(fn_cols, comp_df.index):
+                with col:
+                    st.metric(
+                        label=f"{model_label}",
+                        value=f"{int(comp_df.loc[model_label, 'False Negatives'])} missed cases",
+                        delta=f"{comp_df.loc[model_label, 'False Negative Rate']:.1%} of actual disease cases",
+                        delta_color="inverse"
+                    )
+
             with st.expander("ℹ️ How these metrics are calculated"):
                 st.markdown("""
-                - **Accuracy**: overall proportion of correct predictions.
-                - **Precision**: of all patients predicted to have heart disease, how many actually did.
-                - **Recall**: of all patients who actually have heart disease, how many were correctly identified.
-                - **F1-Score**: the harmonic mean of Precision and Recall, balancing both.
+                All metrics below are calculated on the same held-out test set (`X_test_raw.pkl` / `y_test.pkl`)
+                for a fair, apples-to-apples comparison. Unless noted otherwise, metrics are reported for the
+                **disease class (1)** specifically, not averaged across both classes:
 
-                Precision, Recall, and F1-Score use **weighted averaging** across classes, and all four metrics are calculated on the same held-out test set (`X_test_raw.pkl` / `y_test.pkl`) for a fair, apples-to-apples comparison.
+                - **Accuracy**: overall proportion of correct predictions (both classes combined).
+                - **Precision (Disease)**: of all patients predicted to have heart disease, how many actually did.
+                - **Recall / Sensitivity (Disease)**: of all patients who actually have heart disease, how many were correctly identified.
+                - **Specificity (No Disease)**: of all patients who actually do *not* have heart disease, how many were correctly identified.
+                - **Macro F1**: the F1-score averaged equally across both classes, regardless of class size.
+                - **Weighted F1**: the F1-score averaged across both classes, weighted by how many patients are in each — this can look better than Macro F1 even when the minority class performs worse, since it's dominated by the majority class.
+                - **ROC-AUC**: how well the model ranks disease patients above non-disease patients across all possible thresholds — 1.0 is perfect, 0.5 is no better than random guessing.
+                - **PR-AUC**: similar to ROC-AUC, but focused specifically on precision/recall trade-offs for the positive (disease) class — often more informative than ROC-AUC when the classes are imbalanced.
+                - **False Negatives**: the raw count of disease patients the model incorrectly cleared as healthy.
+                - **False Negative Rate**: what proportion of all actual disease patients were missed.
                 """)
         else:
             st.warning("No models could be evaluated. Please check that all `.pkl` model files exist in the working directory.")

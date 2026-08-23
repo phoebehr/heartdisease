@@ -104,7 +104,12 @@ def transform_user_input(user_dict, expected_features):
     scaling happen automatically inside the pipeline's .predict() call —
     this function must NOT scale or trim columns itself).
     """
-    df = pd.DataFrame([user_dict])
+    df = pd.DataFrame([user_dict]) 
+
+    cp = str(user_dict["cp"]).strip().lower()
+    restecg = str(user_dict["restecg"]).strip().lower()
+    slope = str(user_dict["slope"]).strip().lower()
+    thal = str(user_dict["thal"]).strip().lower()
 
     # 1. Base numeric variables
     df_transformed = pd.DataFrame()
@@ -129,12 +134,12 @@ def transform_user_input(user_dict, expected_features):
         (df['ca'] > 0).astype(int)
     )
     df_transformed['predicted_max_hr'] = 220.0 - df['age']
-    df_transformed['oldpeak_x_flat_slope'] = np.where(df['slope'] == 'flat', df['oldpeak'], 0.0)
+    df_transformed['oldpeak_x_flat_slope'] = np.where(slope == 'flat', df['oldpeak'], 0.0)
     df_transformed['hr_reserve'] = df_transformed['predicted_max_hr'] - df['thalch']
     df_transformed['bp_age_ratio'] = df['trestbps'] / (df['age'] + 1e-5)
     # vessel_thal_severity = ca + 2 ONLY for 'reversable defect' (not any non-normal thal)
     df_transformed['vessel_thal_severity'] = df['ca'] + np.where(
-        df['thal'] == 'reversable defect', 2.0, 0.0
+        thal == 'reversable defect', 2.0, 0.0
     )
 
     # 4. sex — reference category dropped during training: 'Female'
@@ -142,10 +147,10 @@ def transform_user_input(user_dict, expected_features):
     df_transformed['sex_missing'] = 0
 
     # 5. cp — reference category dropped during training: 'asymptomatic'
-    df_transformed['cp_atypical angina'] = 1 if user_dict['cp'] == 'atypical angina' else 0
+    df_transformed['cp_atypical angina'] = 1 if cp == 'atypical angina' else 0
     df_transformed['cp_missing'] = 0
-    df_transformed['cp_non-anginal'] = 1 if user_dict['cp'] == 'non-anginal' else 0
-    df_transformed['cp_typical angina'] = 1 if user_dict['cp'] == 'typical angina' else 0
+    df_transformed['cp_non-anginal'] = 1 if cp == 'non-anginal' else 0
+    df_transformed['cp_typical angina'] = 1 if cp == 'typical angina' else 0
 
     # 6. fbs — reference category dropped during training: False
     df_transformed['fbs_True'] = 1 if user_dict['fbs'] == True else 0
@@ -153,22 +158,22 @@ def transform_user_input(user_dict, expected_features):
 
     # 7. restecg — reference category dropped during training: 'lv hypertrophy'
     df_transformed['restecg_missing'] = 0
-    df_transformed['restecg_normal'] = 1 if user_dict['restecg'] == 'normal' else 0
-    df_transformed['restecg_st-t abnormality'] = 1 if user_dict['restecg'] == 'st-t abnormality' else 0
+    df_transformed['restecg_normal'] = 1 if restecg == 'normal' else 0
+    df_transformed['restecg_st-t abnormality'] = 1 if restecg == 'st-t abnormality' else 0
 
     # 8. exang — reference category dropped during training: False
     df_transformed['exang_True'] = 1 if user_dict['exang'] == True else 0
     df_transformed['exang_missing'] = 0
 
     # 9. slope — reference category dropped during training: 'downsloping'
-    df_transformed['slope_flat'] = 1 if user_dict['slope'] == 'flat' else 0
+    df_transformed['slope_flat'] = 1 if slope == 'flat' else 0
     df_transformed['slope_missing'] = 0
-    df_transformed['slope_upsloping'] = 1 if user_dict['slope'] == 'upsloping' else 0
+    df_transformed['slope_upsloping'] = 1 if slope == 'upsloping' else 0
 
     # 10. thal — reference category dropped during training: 'fixed defect'
     df_transformed['thal_missing'] = 0
-    df_transformed['thal_normal'] = 1 if user_dict['thal'] == 'normal' else 0
-    df_transformed['thal_reversable defect'] = 1 if user_dict['thal'] == 'reversable defect' else 0
+    df_transformed['thal_normal'] = 1 if thal == 'normal' else 0
+    df_transformed['thal_reversable defect'] = 1 if thal == 'reversable defect' else 0
 
     # 11. chol_category — reference category dropped during training: 'borderline'
     chol_val = user_dict['chol']
@@ -196,6 +201,59 @@ def transform_user_input(user_dict, expected_features):
         df_transformed = df_transformed.reindex(columns=expected_features, fill_value=0)
 
     return df_transformed
+
+# ---------------------------------------------------------
+# 3.5 Input Validation
+# ---------------------------------------------------------
+def validate_patient_input(user_dict):
+    """
+    Checks the submitted clinical values for physiological plausibility.
+    Returns two lists: (errors, warnings).
+    - errors: values that are impossible/invalid — prediction is blocked until fixed.
+    - warnings: values that are unusual but not impossible — prediction still proceeds.
+    """
+    errors = []
+    warnings = []
+
+    # --- Resting Blood Pressure ---
+    if user_dict['trestbps'] <= 0:
+        errors.append("Resting Blood Pressure cannot be 0 — this is not physiologically possible for a living patient. Please enter a real reading.")
+    elif user_dict['trestbps'] < 70 or user_dict['trestbps'] > 200:
+        warnings.append(f"Resting Blood Pressure of {user_dict['trestbps']:.0f} mm Hg is outside the typical clinical range (70–200 mm Hg) — please double-check this value.")
+
+    # --- Serum Cholesterol ---
+    if user_dict['chol'] <= 0:
+        errors.append("Serum Cholesterol cannot be 0 — this is not physiologically possible. Please enter a real reading.")
+    elif user_dict['chol'] < 100 or user_dict['chol'] > 500:
+        warnings.append(f"Serum Cholesterol of {user_dict['chol']:.0f} mg/dl is outside the typical clinical range (100–500 mg/dl) — please double-check this value.")
+
+    # --- Max Heart Rate Achieved ---
+    if user_dict['thalch'] <= 0:
+        errors.append("Max Heart Rate Achieved cannot be 0 — this is not physiologically possible. Please enter a real reading.")
+    elif user_dict['thalch'] < 60 or user_dict['thalch'] > 220:
+        warnings.append(f"Max Heart Rate Achieved of {user_dict['thalch']:.0f} bpm is outside the typical range (60–220 bpm) — please double-check this value.")
+
+    # --- Age ---
+    if user_dict['age'] < 18:
+        warnings.append(f"Age of {user_dict['age']:.0f} is below typical adult heart-disease screening age (18+) — results may not be meaningful for this age group.")
+
+    # --- ST Depression (oldpeak) ---
+    if user_dict['oldpeak'] < -3 or user_dict['oldpeak'] > 7:
+        warnings.append(f"ST Depression (oldpeak) of {user_dict['oldpeak']:.1f} is an unusually extreme value — please double-check this reading.")
+
+    # --- Major Vessels Colored ---
+    if user_dict['ca'] not in (0, 1, 2, 3):
+        errors.append("Major Vessels Colored (ca) must be a whole number between 0 and 3.")
+
+    # --- Logical consistency check ---
+    predicted_max_hr = 220 - user_dict['age']
+    if user_dict['thalch'] > predicted_max_hr + 20:
+        warnings.append(
+            f"Max Heart Rate Achieved ({user_dict['thalch']:.0f} bpm) is notably higher than the age-predicted maximum "
+            f"(~{predicted_max_hr:.0f} bpm for age {user_dict['age']:.0f}) — please confirm this value is correct."
+        )
+
+    return errors, warnings
 
 # ---------------------------------------------------------
 # 4. Header & Main Navigation Tabs
@@ -249,23 +307,23 @@ with tab1:
             st.markdown("**👤 Demographics & Basic Vitals**")
             age = st.number_input("Age (years)", min_value=1, max_value=120, value=55, step=1)
             sex = st.selectbox("Sex", ("Male", "Female"))
-            trestbps = st.number_input("Resting Blood Pressure (mm Hg)", min_value=0.0, max_value=250.0, value=130.0)
-            chol = st.number_input("Serum Cholesterol (mg/dl)", min_value=0.0, max_value=600.0, value=240.0)
+            trestbps = st.number_input("Resting Blood Pressure (mm Hg)", min_value=80.0, max_value=250.0, value=130.0)
+            chol = st.number_input("Serum Cholesterol (mg/dl)", min_value=40.0, max_value=600.0, value=240.0)
 
         with col2:
             st.markdown("**🩸 Symptoms & ECG**")
-            cp = st.selectbox("Chest Pain Type (CP)", ("asymptomatic", "typical angina", "atypical angina", "non-anginal"))
+            cp = st.selectbox("Chest Pain Type (CP)", ("Asymptomatic", "Typical Angina", "Atypical Angina", "Non-anginal"))
             fbs = st.selectbox("Fasting Blood Sugar > 120 mg/dl", (False, True))
-            restecg = st.selectbox("Resting ECG Results", ("normal", "st-t abnormality", "lv hypertrophy"))
+            restecg = st.selectbox("Resting ECG Results", ("Normal", "ST-T Abnormality", "LV Hypertrophy"))
             thalch = st.number_input("Max Heart Rate Achieved (bpm)", min_value=50.0, max_value=230.0, value=150.0)
 
         with col3:
             st.markdown("**🏃 Stress Test & Advanced Metrics**")
             exang = st.selectbox("Exercise Induced Angina", (False, True))
             oldpeak = st.number_input("ST Depression (oldpeak)", min_value=0.0, max_value=10.0, value=1.0, step=0.1)
-            slope = st.selectbox("ST Slope", ("flat", "upsloping", "downsloping"))
-            ca = st.number_input("Major Vessels Colored (0-3)", min_value=0.0, max_value=3.0, value=0.0, step=1.0)
-            thal = st.selectbox("Thalassemia Status", ("normal", "fixed defect", "reversable defect"))
+            slope = st.selectbox("ST Slope", ("Flat", "Upsloping", "Downsloping"))
+            ca = st.number_input("Major Vessels Colored (0 - 3)", min_value=0.0, max_value=3.0, value=0.0, step=1.0)
+            thal = st.selectbox("Thalassemia Status", ("Normal", "Fixed Defect", "Reversable Defect"))
 
         submit_button = st.form_submit_button(label="🚀 Predict Heart Disease")
 
@@ -305,41 +363,57 @@ with tab1:
             'thal': thal
         }
 
-        processed_input = transform_user_input(user_dict, expected_features)
+        validation_errors, validation_warnings = validate_patient_input(user_dict)
 
         st.markdown("---")
-        st.subheader("🔍 Prediction Results")
 
-        if user_model is not None:
-            try:
-                # Binary classification prediction
-                raw_pred = user_model.predict(processed_input)
+        if validation_errors:
+            st.subheader("🔍 Prediction Results")
+            st.error("### ⚠️ Please fix the following before predicting:")
+            for err in validation_errors:
+                st.error(f"• {err}")
+            st.info("No prediction was made — correct the values above and click **Predict Heart Disease** again.")
 
-                # Handle 2D output arrays (e.g., Keras/TensorFlow multi-class or probabilities)
-                if len(raw_pred.shape) > 1 and raw_pred.shape[1] > 1:
-                    pred_class = int(np.argmax(raw_pred, axis=1)[0])
-                elif len(raw_pred.shape) > 1:
-                    pred_class = int(raw_pred[0][0] > 0.5)
-                else:
-                    pred_class = int(raw_pred[0])
-
-                # Binary decision output
-                if pred_class == 1:
-                    st.error("### 🚨 Heart Disease Detected (YES)")
-                    st.write(f"The model **`{selected_user_model}`** predicts **Presence of Heart Disease** based on the entered clinical parameters.")
-                    st.markdown("• **Recommended Action**: Consult with a qualified cardiologist for further clinical testing and diagnosis.")
-                else:
-                    st.success("### 🎉 No Heart Disease Detected (NO)")
-                    st.write(f"The model **`{selected_user_model}`** predicts **No Presence of Heart Disease** for this clinical sample.")
-                    st.markdown("• **Recommended Action**: Continue maintaining healthy lifestyle habits, balanced nutrition, and regular checkups.")
-
-                with st.expander("🔬 View Processed Feature Vector Sent to Model"):
-                    st.dataframe(processed_input)
-
-            except Exception as e:
-                st.error(f"Prediction Execution Error: {e}")
         else:
-            st.error("Model is not loaded. Please select a valid model above.")
+            if validation_warnings:
+                st.warning("### ⚠️ Please double-check the following (prediction will still proceed):")
+                for warn in validation_warnings:
+                    st.warning(f"• {warn}")
+
+            processed_input = transform_user_input(user_dict, expected_features)
+
+            st.subheader("🔍 Prediction Results")
+
+            if user_model is not None:
+                try:
+                    # Binary classification prediction
+                    raw_pred = user_model.predict(processed_input)
+
+                    # Handle 2D output arrays (e.g., Keras/TensorFlow multi-class or probabilities)
+                    if len(raw_pred.shape) > 1 and raw_pred.shape[1] > 1:
+                        pred_class = int(np.argmax(raw_pred, axis=1)[0])
+                    elif len(raw_pred.shape) > 1:
+                        pred_class = int(raw_pred[0][0] > 0.5)
+                    else:
+                        pred_class = int(raw_pred[0])
+
+                    # Binary decision output
+                    if pred_class == 1:
+                        st.error("### 🚨 Heart Disease Detected (YES)")
+                        st.write(f"The model **`{selected_user_model}`** predicts **Presence of Heart Disease** based on the entered clinical parameters.")
+                        st.markdown("• **Recommended Action**: Consult with a qualified cardiologist for further clinical testing and diagnosis.")
+                    else:
+                        st.success("### 🎉 No Heart Disease Detected (NO)")
+                        st.write(f"The model **`{selected_user_model}`** predicts **No Presence of Heart Disease** for this clinical sample.")
+                        st.markdown("• **Recommended Action**: Continue maintaining healthy lifestyle habits, balanced nutrition, and regular checkups.")
+
+                    with st.expander("🔬 View Processed Feature Vector Sent to Model"):
+                        st.dataframe(processed_input)
+
+                except Exception as e:
+                    st.error(f"Prediction Execution Error: {e}")
+            else:
+                st.error("Model is not loaded. Please select a valid model above.")
 
 # ---------------------------------------------------------
 # TAB 2: Model Evaluation Dashboard
@@ -410,7 +484,7 @@ with tab2:
 # ---------------------------------------------------------
 with tab3:
     st.subheader("📈 Model Comparison")
-    st.write("Side-by-side comparison of Accuracy, Precision, Recall, and F1-score for all three models, evaluated on the same test set.")
+    st.write("Side-by-side comparison of Accuracy, Precision, Recall, and F1-score for all three models, evaluated on the same held-out test set.")
 
     st.markdown("---")
 

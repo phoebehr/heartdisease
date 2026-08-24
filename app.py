@@ -5,7 +5,7 @@ import numpy as np
 import joblib
 import plotly.express as px
 import plotly.graph_objects as go
-from model_wrappers import ThresholdedClassifier
+from model_wrappers import ThresholdedClassifier, OutlierCapper
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,

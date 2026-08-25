@@ -88,10 +88,31 @@ def load_test_data():
     except Exception:
         return None, None
 
+@st.cache_data
+def load_metrics(filename):
+    """
+    Loads a model's pre-computed final metrics, saved directly by its training
+    notebook in the same cell that saved the model itself. Reading these stored
+    numbers (rather than re-predicting here) guarantees this app always shows
+    exactly what each notebook reported as its final result — no risk of the
+    two drifting apart from re-running notebooks in a different order, or from
+    live predictions landing on a different generation of test data.
+    """
+    try:
+        return joblib.load(filename)
+    except Exception:
+        return None
+
 model_files = {
     "KNN (K-Nearest Neighbors)": "knn_model.pkl",
     "SVM (Support Vector Machine)": "svm_model.pkl",
     "ANN (Artificial Neural Network)": "ann_model.pkl"
+}
+
+metrics_files = {
+    "KNN (K-Nearest Neighbors)": "knn_metrics.pkl",
+    "SVM (Support Vector Machine)": "svm_metrics.pkl",
+    "ANN (Artificial Neural Network)": "ann_metrics.pkl"
 }
 
 # Unpack global variables
@@ -437,52 +458,56 @@ with tab2:
         key="eval_model_select"
     )
 
-    # Indication of selected model
-    eval_model = None
-    try:
-        eval_model = load_model(model_files[selected_eval_model])
-        st.success(f"🎯 **Currently Evaluating:** `{selected_eval_model}`")
-    except Exception:
-        st.error(f"⚠️ Unable to load `{selected_eval_model}`. Please ensure `.pkl` files exist in working directory.")
+    st.caption(
+        "Metrics below are read directly from the values each training notebook reported for its "
+        "own final model — not recalculated here — so this app always matches what's in the notebooks."
+    )
+
+    eval_metrics = load_metrics(metrics_files[selected_eval_model])
+
+    if eval_metrics is not None:
+        st.success(
+            f"🎯 **Currently Evaluating:** `{selected_eval_model}` "
+            f"(final model: *{eval_metrics['best_stage_name']}*)"
+        )
+    else:
+        st.error(
+            f"⚠️ Unable to load stored metrics for `{selected_eval_model}`. "
+            f"Please ensure `{metrics_files[selected_eval_model]}` exists in the working directory "
+            f"(run the model's training notebook to generate it)."
+        )
 
     st.markdown("---")
     st.subheader(f"📊 Performance Evaluation: {selected_eval_model}")
 
-    if eval_model is not None and X_test_raw is not None and y_test is not None:
-        try:
-            # eval_model is a full Pipeline — pass the RAW test features directly,
-            # it selects/scales internally, exactly as it did during training.
-            y_pred = eval_model.predict(X_test_raw)
+    if eval_metrics is not None:
+        col1, col2 = st.columns([1, 1])
 
-            if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
-                y_pred = np.argmax(y_pred, axis=1)
-            elif len(y_pred.shape) > 1:
-                y_pred = (y_pred > 0.5).astype(int).flatten()
-
-            acc = accuracy_score(y_test, y_pred)
-
-            col1, col2 = st.columns([1, 1])
-
-            with col1:
-                st.metric(label=f"{selected_eval_model} Test Accuracy", value=f"{acc * 100:.2f}%")
+        with col1:
+            st.metric(label=f"{selected_eval_model} Test Accuracy", value=f"{eval_metrics['accuracy'] * 100:.2f}%")
+            st.metric(label="Recall / Sensitivity (Disease)", value=f"{eval_metrics['recall_disease'] * 100:.2f}%")
+            st.metric(label="Test Set Size", value=f"{eval_metrics['n_test_samples']} patients")
+            if X_test_raw is not None:
                 st.write("### Test Features Sample")
                 st.dataframe(X_test_raw.head(5) if isinstance(X_test_raw, pd.DataFrame) else pd.DataFrame(X_test_raw).head(5))
 
-            with col2:
-                cm = confusion_matrix(y_test, y_pred)
-                fig_cm = px.imshow(
-                    cm,
-                    text_auto=True,
-                    color_continuous_scale="Reds",
-                    labels=dict(x="Predicted Class", y="Actual Class"),
-                    title=f"Confusion Matrix ({selected_eval_model})"
-                )
-                st.plotly_chart(fig_cm, use_container_width=True)
+        with col2:
+            cm_dict = eval_metrics["confusion_matrix"]
+            cm = np.array([
+                [cm_dict["tn"], cm_dict["fp"]],
+                [cm_dict["fn"], cm_dict["tp"]]
+            ])
+            fig_cm = px.imshow(
+                cm,
+                text_auto=True,
+                color_continuous_scale="Reds",
+                labels=dict(x="Predicted Class", y="Actual Class"),
+                title=f"Confusion Matrix ({selected_eval_model})"
+            )
+            st.plotly_chart(fig_cm, use_container_width=True)
 
-        except Exception as e:
-            st.error(f"Error calculating model evaluation metrics: {e}")
     else:
-        st.warning("Ensure model files and `X_test_raw.pkl` / `y_test.pkl` are available to render performance evaluation.")
+        st.warning("Ensure the model's `_metrics.pkl` file is available to render performance evaluation.")
 
     if X_test_raw is not None:
         st.markdown("---")
@@ -494,156 +519,146 @@ with tab2:
 # ---------------------------------------------------------
 with tab3:
     st.subheader("📈 Model Comparison")
-    st.write("Side-by-side comparison of all three models, evaluated on the same held-out test set. "
-             "Metrics below focus specifically on the **disease class (1)** — the positive class this "
-             "tool is meant to detect — rather than an average across both classes.")
+    st.write("Side-by-side comparison of all three models' final results. Metrics below focus "
+             "specifically on the **disease class (1)** — the positive class this tool is meant to "
+             "detect — rather than an average across both classes.")
+    st.caption(
+        "Metrics below are read directly from the values each training notebook reported for its "
+        "own final model — not recalculated here — so this app always matches what's in the notebooks."
+    )
 
     st.markdown("---")
 
-    if X_test_raw is not None and y_test is not None:
-        comparison_rows = []
-        load_errors = []
+    comparison_rows = []
+    load_errors = []
 
-        for model_label, filename in model_files.items():
-            try:
-                comp_model = load_model(filename)
-                y_pred = comp_model.predict(X_test_raw)
-
-                # Handle 2D output arrays (e.g., Keras/TensorFlow multi-class or probabilities)
-                if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
-                    y_pred = np.argmax(y_pred, axis=1)
-                elif len(y_pred.shape) > 1:
-                    y_pred = (y_pred > 0.5).astype(int).flatten()
-
-                # predicted probabilities, needed for ROC-AUC / PR-AUC
-                y_proba = None
-                if hasattr(comp_model, "predict_proba"):
-                    try:
-                        y_proba = comp_model.predict_proba(X_test_raw)[:, 1]
-                    except Exception:
-                        y_proba = None
-
-                tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-                specificity = tn / (tn + fp) if (tn + fp) > 0 else np.nan
-                fn_rate = fn / (fn + tp) if (fn + tp) > 0 else np.nan
-
-                row = {
-                    "Model": model_label,
-                    "Accuracy": accuracy_score(y_test, y_pred),
-                    "Precision (Disease)": precision_score(y_test, y_pred, pos_label=1, zero_division=0),
-                    "Recall / Sensitivity (Disease)": recall_score(y_test, y_pred, pos_label=1, zero_division=0),
-                    "Specificity (No Disease)": specificity,
-                    "Macro F1": f1_score(y_test, y_pred, average="macro", zero_division=0),
-                    "Weighted F1": f1_score(y_test, y_pred, average="weighted", zero_division=0),
-                    "ROC-AUC": roc_auc_score(y_test, y_proba) if y_proba is not None else np.nan,
-                    "PR-AUC": average_precision_score(y_test, y_proba) if y_proba is not None else np.nan,
-                    "False Negatives": int(fn),
-                    "False Negative Rate": fn_rate,
-                }
-                comparison_rows.append(row)
-            except Exception as e:
-                load_errors.append(f"⚠️ Could not evaluate `{model_label}`: {e}")
-
-        for err in load_errors:
-            st.error(err)
-
-        if comparison_rows:
-            comp_df = pd.DataFrame(comparison_rows).set_index("Model")
-
-            percent_cols = [
-                "Accuracy", "Precision (Disease)", "Recall / Sensitivity (Disease)",
-                "Specificity (No Disease)", "Macro F1", "Weighted F1",
-                "ROC-AUC", "PR-AUC", "False Negative Rate"
-            ]
-
-            # 1. Summary table — best value per metric highlighted
-            # (False Negatives is the one column where LOWER is better, everything else HIGHER is better)
-            st.markdown("#### 📋 Metric Summary")
-            format_dict = {col: "{:.2%}" for col in percent_cols}
-            format_dict["False Negatives"] = "{:.0f}"
-
-            styled_df = (
-                comp_df.style
-                .format(format_dict)
-                .highlight_max(subset=percent_cols, axis=0, color="#c6f6d5")
-                .highlight_min(subset=["False Negatives", "False Negative Rate"], axis=0, color="#c6f6d5")
+    for model_label, filename in metrics_files.items():
+        m = load_metrics(filename)
+        if m is None:
+            load_errors.append(
+                f"⚠️ Could not load stored metrics for `{model_label}`. "
+                f"Please ensure `{filename}` exists (run the model's training notebook to generate it)."
             )
-            st.dataframe(styled_df, use_container_width=True)
+            continue
 
-            # 2. Best model per key metric, as quick-glance cards
-            st.markdown("#### 🏆 Best Model per Key Metric")
-            metric_cols = st.columns(4)
-            key_metrics = ["Accuracy", "Recall / Sensitivity (Disease)", "Specificity (No Disease)", "ROC-AUC"]
-            for col, metric in zip(metric_cols, key_metrics):
-                best_model_name = comp_df[metric].idxmax()
-                best_value = comp_df[metric].max()
-                with col:
-                    st.metric(label=metric, value=f"{best_value * 100:.2f}%", delta=best_model_name)
+        comparison_rows.append({
+            "Model": model_label,
+            "Accuracy": m["accuracy"],
+            "Precision (Disease)": m["precision_disease"],
+            "Recall / Sensitivity (Disease)": m["recall_disease"],
+            "Specificity (No Disease)": m["specificity"],
+            "Macro F1": m["macro_f1"],
+            "Weighted F1": m["weighted_f1"],
+            "ROC-AUC": m["roc_auc"],
+            "PR-AUC": m["pr_auc"],
+            "False Negatives": m["false_negatives"],
+            "False Negative Rate": m["false_negative_rate"],
+        })
 
-            st.markdown("---")
+    for err in load_errors:
+        st.error(err)
 
-            # 3. Grouped bar chart across the core metrics
-            st.markdown("#### 📊 Visual Comparison")
-            chart_metrics = ["Accuracy", "Precision (Disease)", "Recall / Sensitivity (Disease)",
-                              "Specificity (No Disease)", "Macro F1", "ROC-AUC"]
-            fig = go.Figure()
-            for model_label in comp_df.index:
-                fig.add_trace(go.Bar(
-                    name=model_label,
-                    x=chart_metrics,
-                    y=comp_df.loc[model_label, chart_metrics],
-                    text=[f"{v:.1%}" for v in comp_df.loc[model_label, chart_metrics]],
-                    textposition="auto"
-                ))
-            fig.update_layout(
-                barmode="group",
-                yaxis_title="Score",
-                yaxis_tickformat=".0%",
-                legend_title="Model",
-                height=450
-            )
-            st.plotly_chart(fig, use_container_width=True)
+    if comparison_rows:
+        comp_df = pd.DataFrame(comparison_rows).set_index("Model")
 
-            # 4. False Negatives — explicit clinical callout
-            st.markdown("---")
-            st.markdown("#### 🚨 False Negatives — Why This Matters Most")
-            st.warning(
-                "In this context, a **false negative** means the model told a patient who actually has "
-                "heart disease that they *don't*. This is the most clinically dangerous type of error a "
-                "screening tool can make: it can lead to a missed diagnosis, delayed treatment, and a "
-                "false sense of reassurance — whereas a **false positive** (incorrectly flagging a healthy "
-                "patient) typically just leads to extra testing that rules the disease out. For this reason, "
-                "**Recall / Sensitivity** and the **False Negative** count below are arguably more important "
-                "than overall Accuracy when judging which model is safest to deploy."
-            )
-            fn_cols = st.columns(3)
-            for col, model_label in zip(fn_cols, comp_df.index):
-                with col:
-                    st.metric(
-                        label=f"{model_label}",
-                        value=f"{int(comp_df.loc[model_label, 'False Negatives'])} missed cases",
-                        delta=f"{comp_df.loc[model_label, 'False Negative Rate']:.1%} of actual disease cases",
-                        delta_color="inverse"
-                    )
+        percent_cols = [
+            "Accuracy", "Precision (Disease)", "Recall / Sensitivity (Disease)",
+            "Specificity (No Disease)", "Macro F1", "Weighted F1",
+            "ROC-AUC", "PR-AUC", "False Negative Rate"
+        ]
 
-            with st.expander("ℹ️ How these metrics are calculated"):
-                st.markdown("""
-                All metrics below are calculated on the same held-out test set (`X_test_raw.pkl` / `y_test.pkl`)
-                for a fair, apples-to-apples comparison. Unless noted otherwise, metrics are reported for the
-                **disease class (1)** specifically, not averaged across both classes:
+        # 1. Summary table — best value per metric highlighted
+        # (False Negatives is the one column where LOWER is better, everything else HIGHER is better)
+        st.markdown("#### 📋 Metric Summary")
+        format_dict = {col: "{:.2%}" for col in percent_cols}
+        format_dict["False Negatives"] = "{:.0f}"
 
-                - **Accuracy**: overall proportion of correct predictions (both classes combined).
-                - **Precision (Disease)**: of all patients predicted to have heart disease, how many actually did.
-                - **Recall / Sensitivity (Disease)**: of all patients who actually have heart disease, how many were correctly identified.
-                - **Specificity (No Disease)**: of all patients who actually do *not* have heart disease, how many were correctly identified.
-                - **Macro F1**: the F1-score averaged equally across both classes, regardless of class size.
-                - **Weighted F1**: the F1-score averaged across both classes, weighted by how many patients are in each — this can look better than Macro F1 even when the minority class performs worse, since it's dominated by the majority class.
-                - **ROC-AUC**: how well the model ranks disease patients above non-disease patients across all possible thresholds — 1.0 is perfect, 0.5 is no better than random guessing.
-                - **PR-AUC**: similar to ROC-AUC, but focused specifically on precision/recall trade-offs for the positive (disease) class — often more informative than ROC-AUC when the classes are imbalanced.
-                - **False Negatives**: the raw count of disease patients the model incorrectly cleared as healthy.
-                - **False Negative Rate**: what proportion of all actual disease patients were missed.
-                """)
-        else:
-            st.warning("No models could be evaluated. Please check that all `.pkl` model files exist in the working directory.")
+        styled_df = (
+            comp_df.style
+            .format(format_dict)
+            .highlight_max(subset=percent_cols, axis=0, color="#c6f6d5")
+            .highlight_min(subset=["False Negatives", "False Negative Rate"], axis=0, color="#c6f6d5")
+        )
+        st.dataframe(styled_df, use_container_width=True)
+
+        # 2. Best model per key metric, as quick-glance cards
+        st.markdown("#### 🏆 Best Model per Key Metric")
+        metric_cols = st.columns(4)
+        key_metrics = ["Accuracy", "Recall / Sensitivity (Disease)", "Specificity (No Disease)", "ROC-AUC"]
+        for col, metric in zip(metric_cols, key_metrics):
+            best_model_name = comp_df[metric].idxmax()
+            best_value = comp_df[metric].max()
+            with col:
+                st.metric(label=metric, value=f"{best_value * 100:.2f}%", delta=best_model_name)
+
+        st.markdown("---")
+
+        # 3. Grouped bar chart across the core metrics
+        st.markdown("#### 📊 Visual Comparison")
+        chart_metrics = ["Accuracy", "Precision (Disease)", "Recall / Sensitivity (Disease)",
+                          "Specificity (No Disease)", "Macro F1", "ROC-AUC"]
+        fig = go.Figure()
+        for model_label in comp_df.index:
+            fig.add_trace(go.Bar(
+                name=model_label,
+                x=chart_metrics,
+                y=comp_df.loc[model_label, chart_metrics],
+                text=[f"{v:.1%}" for v in comp_df.loc[model_label, chart_metrics]],
+                textposition="auto"
+            ))
+        fig.update_layout(
+            barmode="group",
+            yaxis_title="Score",
+            yaxis_tickformat=".0%",
+            legend_title="Model",
+            height=450
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 4. False Negatives — explicit clinical callout
+        st.markdown("---")
+        st.markdown("#### 🚨 False Negatives — Why This Matters Most")
+        st.warning(
+            "In this context, a **false negative** means the model told a patient who actually has "
+            "heart disease that they *don't*. This is the most clinically dangerous type of error a "
+            "screening tool can make: it can lead to a missed diagnosis, delayed treatment, and a "
+            "false sense of reassurance — whereas a **false positive** (incorrectly flagging a healthy "
+            "patient) typically just leads to extra testing that rules the disease out. For this reason, "
+            "**Recall / Sensitivity** and the **False Negative** count below are arguably more important "
+            "than overall Accuracy when judging which model is safest to deploy."
+        )
+        fn_cols = st.columns(3)
+        for col, model_label in zip(fn_cols, comp_df.index):
+            with col:
+                st.metric(
+                    label=f"{model_label}",
+                    value=f"{int(comp_df.loc[model_label, 'False Negatives'])} missed cases",
+                    delta=f"{comp_df.loc[model_label, 'False Negative Rate']:.1%} of actual disease cases",
+                    delta_color="inverse"
+                )
+
+        with st.expander("ℹ️ How these metrics are calculated"):
+            st.markdown("""
+            All metrics below are the exact values each training notebook computed for its own final
+            model, saved directly to a `_metrics.pkl` file at the end of that notebook — this app does
+            not re-run any predictions. Unless noted otherwise, metrics are reported for the
+            **disease class (1)** specifically, not averaged across both classes:
+
+            - **Accuracy**: overall proportion of correct predictions (both classes combined).
+            - **Precision (Disease)**: of all patients predicted to have heart disease, how many actually did.
+            - **Recall / Sensitivity (Disease)**: of all patients who actually have heart disease, how many were correctly identified.
+            - **Specificity (No Disease)**: of all patients who actually do *not* have heart disease, how many were correctly identified.
+            - **Macro F1**: the F1-score averaged equally across both classes, regardless of class size.
+            - **Weighted F1**: the F1-score averaged across both classes, weighted by how many patients are in each — this can look better than Macro F1 even when the minority class performs worse, since it's dominated by the majority class.
+            - **ROC-AUC**: how well the model ranks disease patients above non-disease patients across all possible thresholds — 1.0 is perfect, 0.5 is no better than random guessing.
+            - **PR-AUC**: similar to ROC-AUC, but focused specifically on precision/recall trade-offs for the positive (disease) class — often more informative than ROC-AUC when the classes are imbalanced.
+            - **False Negatives**: the raw count of disease patients the model incorrectly cleared as healthy.
+            - **False Negative Rate**: what proportion of all actual disease patients were missed.
+
+            **Important:** these numbers reflect *test-set* accuracy — different from any "Accuracy" value
+            shown in a training notebook's CV comparison table, since model *selection* there uses an
+            F-beta (recall-weighted) score, not plain accuracy. Only this final, single test-set evaluation
+            is true accuracy.
+            """)
     else:
-        st.warning("Ensure `X_test_raw.pkl` and `y_test.pkl` are available to render the model comparison.")
+        st.warning("No stored metrics could be loaded. Please run each model's training notebook first.")

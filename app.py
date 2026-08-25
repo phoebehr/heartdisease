@@ -264,6 +264,13 @@ def validate_patient_input(user_dict):
 st.markdown("<h1 class='main-title'>🫀 Heart Disease Prediction</h1>", unsafe_allow_html=True)
 st.markdown("<p class='sub-title'>Interactive clinical questionnaire with real-time machine learning prediction.</p>", unsafe_allow_html=True)
 
+st.warning(
+    "⚠️ **Educational prototype — not a medical diagnosis.** This tool estimates a statistical "
+    "likelihood based on a machine learning model trained on a public dataset. It is **not** a "
+    "substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified "
+    "healthcare provider with any questions about your health."
+)
+
 # Navigation Tabs
 tab1, tab2, tab3 = st.tabs(["📝 Heart Disease Quiz", "📊 Model Evaluation", "📈 Model Comparison"])
 
@@ -400,14 +407,14 @@ with tab1:
                     else:
                         pred_class = int(raw_pred[0])
 
-                    # Binary decision output
+                    # Binary decision output — framed as a predicted likelihood, not a diagnosis
                     if pred_class == 1:
-                        st.error("### 🚨 Heart Disease Detected (YES)")
-                        st.write(f"The model **`{selected_user_model}`** predicts **Presence of Heart Disease** based on the entered clinical parameters.")
+                        st.error("### 🚨 Higher Predicted Likelihood of Heart Disease")
+                        st.write(f"Based on the entered clinical parameters, the model **`{selected_user_model}`** places this profile in the **higher-likelihood** group for heart disease. This is a statistical estimate, **not a diagnosis**.")
                         st.markdown("• **Recommended Action**: Consult with a qualified cardiologist for further clinical testing and diagnosis.")
                     else:
-                        st.success("### 🎉 No Heart Disease Detected (NO)")
-                        st.write(f"The model **`{selected_user_model}`** predicts **No Presence of Heart Disease** for this clinical sample.")
+                        st.success("### 🎉 Lower Predicted Likelihood of Heart Disease")
+                        st.write(f"Based on the entered clinical parameters, the model **`{selected_user_model}`** places this profile in the **lower-likelihood** group for heart disease. This is a statistical estimate, **not a diagnosis** — it does not rule out heart disease.")
                         st.markdown("• **Recommended Action**: Continue maintaining healthy lifestyle habits, balanced nutrition, and regular checkups.")
 
                     with st.expander("🔬 View Processed Feature Vector Sent to Model"):

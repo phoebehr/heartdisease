@@ -288,8 +288,7 @@ st.markdown("<p class='sub-title'>Interactive clinical questionnaire with real-t
 st.warning(
     "⚠️ **Educational prototype — not a medical diagnosis.** This tool estimates a statistical "
     "likelihood based on a machine learning model trained on a public dataset. It is **not** a "
-    "substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified "
-    "healthcare provider with any questions about your health."
+    "substitute for professional medical advice, diagnosis, or treatment. "
 )
 
 # Navigation Tabs
